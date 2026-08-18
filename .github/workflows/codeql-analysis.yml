@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip semgrep
           mkdir -p report
-          python -m semgrep scan \
+          semgrep scan \
             --config p/swift \
             --config p/security-audit \
             --config p/secrets \
