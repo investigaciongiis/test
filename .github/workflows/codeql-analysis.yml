@@ -14,6 +14,10 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v6
+      - name: Setup Python for analysis tools
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Resolve Xcode project and scheme
         id: ios
         shell: bash
@@ -77,9 +81,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --user --upgrade semgrep
+          python -m pip install --upgrade pip semgrep
           mkdir -p report
-          python3 -m semgrep scan \
+          python -m semgrep scan \
             --config p/swift \
             --config p/security-audit \
             --config p/secrets \
