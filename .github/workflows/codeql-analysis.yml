@@ -4,8 +4,8 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
-  sast:
-    name: Swift and Objective-C SAST
+  xcode_sast:
+    name: CodeQL Swift and Clang Analyzer
     if: ${{ github.actor != 'dependabot[bot]' && !startsWith(github.head_ref || github.ref_name || '', 'dependabot/') && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) }}
     runs-on: macos-15
     permissions:
@@ -14,10 +14,6 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v6
-      - name: Setup Python for analysis tools
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
       - name: Resolve Xcode project and scheme
         id: ios
         shell: bash
@@ -77,7 +73,31 @@ jobs:
         with:
           output: report/codeql
           upload: ${{ vars.ENABLE_CODE_SCANNING_UPLOAD == 'true' }}
-      - name: Run Semgrep for Swift and Objective-C
+      - name: Upload Xcode SAST components
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: sast-xcode-components
+          path: |
+            report/**/*.sarif
+            report/xcode-analyzer.log
+            report/xcode-analyzer.json
+            report/xcode-analyzer/Analyze.xcresult
+          if-no-files-found: warn
+
+  semgrep:
+    name: Semgrep Swift and Objective-C
+    if: ${{ github.actor != 'dependabot[bot]' && !startsWith(github.head_ref || github.ref_name || '', 'dependabot/') && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Python for Semgrep
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install and run Semgrep
         shell: bash
         run: |
           set -euo pipefail
@@ -90,29 +110,55 @@ jobs:
             --config .github/semgrep/objective-c-security.yml \
             --sarif --output report/semgrep.sarif .
           test -s report/semgrep.sarif
+      - name: Upload Semgrep component
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: sast-semgrep-component
+          path: report/semgrep.sarif
+          if-no-files-found: warn
+
+  merge_sast:
+    name: Merge SAST findings
+    needs: [xcode_sast, semgrep]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download Xcode SAST components
+        uses: actions/download-artifact@v6
+        with:
+          name: sast-xcode-components
+          path: components/xcode
+      - name: Download Semgrep component
+        uses: actions/download-artifact@v6
+        with:
+          name: sast-semgrep-component
+          path: components/semgrep
       - name: Merge SARIF reports
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
-          import glob, json
+          import glob, json, os
+          paths = glob.glob('components/**/*.sarif', recursive=True)
+          if not paths:
+              raise SystemExit('No SARIF reports were downloaded')
           runs = []
-          paths = glob.glob('report/codeql/*.sarif') + [
-              'report/semgrep.sarif',
-              'report/xcode-analyzer.sarif',
-          ]
           for path in paths:
-              with open(path, encoding='utf-8') as f: runs.extend(json.load(f).get('runs', []))
-          with open('report/merged.sarif', 'w', encoding='utf-8') as f:
-              json.dump({'version': '2.1.0', 'runs': runs}, f)
+              with open(path, encoding='utf-8') as source:
+                  runs.extend(json.load(source).get('runs', []))
+          os.makedirs('report', exist_ok=True)
+          with open('report/merged.sarif', 'w', encoding='utf-8') as target:
+              json.dump({'version': '2.1.0', 'runs': runs}, target)
           PY
-      - name: Upload SAST findings
-        if: always()
+          test -s report/merged.sarif
+      - name: Upload unified SAST findings
         uses: actions/upload-artifact@v6
         with:
           name: sast-findings
           path: |
-            report/**/*.sarif
-            report/xcode-analyzer.log
-            report/xcode-analyzer.json
-            report/xcode-analyzer/Analyze.xcresult
-          if-no-files-found: warn
+            report/merged.sarif
+            components/**/*.sarif
+          if-no-files-found: error
